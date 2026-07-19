@@ -303,11 +303,11 @@ if user_query := st.chat_input("اكتب تفاصيل عائلتك أو الصق
                 message_placeholder.markdown(full_response)
 
         # =========================================================
-        # 8. توليد مخطط الطابق الثنائي الأبعاد (Wan2.7-image-pro)
+        # 8. توليد مخطط الطابق الثنائي الأبعاد (Wan2.7-image)
         # =========================================================
         if full_response and dashscope_api_key and generate_floor_plan_enabled:
             with st.expander("🏠 عرض مخطط الطابق الثنائي الأبعاد (2D Floor Plan)", expanded=False):
-                with st.spinner("جاري إرسال التقرير إلى Wan2.7-image-pro لتوليد المخطط المعماري..."):
+                with st.spinner("جاري إرسال التقرير إلى Wan2.7-image لتوليد المخطط المعماري..."):
                     try:
                         floor_plan_bytes = generate_floor_plan(
                             report_text=full_response,
@@ -317,7 +317,7 @@ if user_query := st.chat_input("اكتب تفاصيل عائلتك أو الصق
                         if floor_plan_bytes:
                             st.image(
                                 floor_plan_bytes,
-                                caption="مخطط ثنائي الأبعاد مُولَّد بواسطة Wan2.7-image-pro (DashScope)",
+                                caption="مخطط ثنائي الأبعاد مُولَّد بواسطة Wan2.7-image (DashScope)",
                                 use_container_width=True,
                             )
                             st.download_button(
@@ -327,7 +327,7 @@ if user_query := st.chat_input("اكتب تفاصيل عائلتك أو الصق
                                 mime="image/png",
                             )
                         else:
-                            st.warning("⚠️ لم يتم توليد صورة من Wan2.7-image-pro. تحقق من صلاحيات مفتاح DashScope.")
+                            st.warning("⚠️ لم يتم توليد صورة من Wan2.7-image. تحقق من صلاحيات مفتاح DashScope.")
                     except Exception as fp_exc:
                         st.error(f"❌ خطأ في خدمة توليد المخطط (Wan2.7): `{fp_exc}`")
 

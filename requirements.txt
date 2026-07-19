@@ -4,3 +4,4 @@ python-dotenv
 pinecone
 pypdf
 openai
+dashscope
