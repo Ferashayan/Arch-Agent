@@ -1,43 +1,51 @@
-"""
+﻿"""
 services/floor_plan_service.py
 -------------------------------
-Sends the architectural report to Alibaba DashScope Wan2.7-image-pro to
-generate a 2D floor plan image.
+Generates a 2D floor plan image from an architectural report using any
+OpenAI-compatible image-generation model (default: wan2.7-image-pro via
+DashScope's compatible-mode endpoint).
+
+Because we use the standard OpenAI client, switching models is a one-line
+change — just update FLOOR_PLAN_MODEL in your .env (or pass `model=` to the
+function directly).
 
 Public API
 ----------
-generate_floor_plan(report_text, dashscope_api_key, use_intl_endpoint=True)
-    -> bytes | None
+generate_floor_plan(
+    report_text    : str,
+    api_key        : str | None  = None,   # falls back to DASHSCOPE_API_KEY
+    model          : str | None  = None,   # falls back to FLOOR_PLAN_MODEL env / wan2.7-image-pro
+    use_intl       : bool        = True,   # True = intl endpoint (outside China)
+) -> bytes | None
 
-Notes
------
-- Uses ImageGeneration.call() (synchronous) from dashscope.aigc.image_generation
-- International endpoint (outside China): dashscope-intl.aliyuncs.com/api/v1
-- China endpoint: dashscope.aliyuncs.com/api/v1
+Endpoints
+---------
+International : https://dashscope-intl.aliyuncs.com/compatible-mode/v1
+China         : https://dashscope.aliyuncs.com/compatible-mode/v1
 """
 
 from __future__ import annotations
 
 import logging
 import os
-from http import HTTPStatus
 from pathlib import Path
 from typing import Optional
 from urllib.request import urlopen
 
 from dotenv import load_dotenv
-import dashscope
-from dashscope.aigc.image_generation import ImageGeneration
-from dashscope.api_entities.dashscope_response import Message
+from openai import OpenAI
 
-# Load .env from the project root so the service works standalone too
+# Load .env from the project root (works whether called from Streamlit or standalone)
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 logger = logging.getLogger(__name__)
 
-_WAN_MODEL        = "wan2.7-image-pro"
-_ENDPOINT_INTL    = "https://dashscope-intl.aliyuncs.com/api/v1"
-_ENDPOINT_CHINA   = "https://dashscope.aliyuncs.com/api/v1"
+# ---------------------------------------------------------------------------
+# Defaults — override any of these in .env
+# ---------------------------------------------------------------------------
+_DEFAULT_MODEL        = os.getenv("FLOOR_PLAN_MODEL", "wan2.7-image-pro")
+_BASE_URL_INTL        = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
+_BASE_URL_CHINA       = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 
 
 def _build_prompt(report_text: str) -> str:
@@ -49,7 +57,7 @@ def _build_prompt(report_text: str) -> str:
         "- Show: thick black walls, room labels in English, door arcs, window hatches, "
         "staircase stepped symbol, elevator shaft box.\n"
         "- Include ALL rooms and spaces mentioned in the report.\n"
-        "- Organise as separate clearly labelled sections: Ground Floor, First Floor, Roof/Annex.\n"
+        "- Organise as clearly labelled sections: Ground Floor, First Floor, Roof/Annex.\n"
         "- Standard architectural symbols only. No furniture, no colors, no shadows.\n"
         "- Proportions realistic to the land area and setbacks described.\n"
         "- North-arrow indicator in one corner.\n\n"
@@ -57,97 +65,113 @@ def _build_prompt(report_text: str) -> str:
         "---\n"
         f"{report_text}\n"
         "---\n\n"
-        "Output: a single clean 2D floor plan image. No text captions, no decorative borders."
+        "Output: a single clean 2D floor plan image. No text captions, no borders."
     )
+
+
+def _extract_image_url(response) -> Optional[str]:
+    """
+    Extract the image URL from an OpenAI-compatible chat completion response.
+    Handles both plain-string content and list-of-content-items formats.
+    """
+    choices = response.choices
+    if not choices:
+        return None
+
+    content = choices[0].message.content
+
+    # Case 1: content is a plain URL string
+    if isinstance(content, str) and content.startswith("http"):
+        return content
+
+    # Case 2: content is a list of typed items
+    if isinstance(content, list):
+        for item in content:
+            # item may be a dict or a Pydantic model
+            if isinstance(item, dict):
+                t = item.get("type", "")
+                if t == "image_url":
+                    return item.get("image_url", {}).get("url")
+                if t == "image":
+                    return item.get("image")
+                # plain URL value in any key
+                for v in item.values():
+                    if isinstance(v, str) and v.startswith("http"):
+                        return v
+            else:
+                # Pydantic-style attribute access
+                t = getattr(item, "type", "")
+                if t == "image_url":
+                    iu = getattr(item, "image_url", None)
+                    return getattr(iu, "url", None)
+                if t == "image":
+                    return getattr(item, "image", None)
+
+    return None
 
 
 def generate_floor_plan(
     report_text: str,
-    dashscope_api_key: str,
-    use_intl_endpoint: bool = True,
+    api_key: Optional[str] = None,
+    model: Optional[str] = None,
+    use_intl: bool = True,
 ) -> Optional[bytes]:
     """
-    Calls Wan2.7-image-pro via DashScope ImageGeneration API and returns
-    the raw image bytes.
+    Calls an OpenAI-compatible image-generation model (default: wan2.7-image-pro)
+    and returns the raw image bytes.
 
     Parameters
     ----------
     report_text : str
-        Full architectural report from the main agent.
-    dashscope_api_key : str
-        Alibaba DashScope API key.
-    use_intl_endpoint : bool
-        True  -> dashscope-intl.aliyuncs.com  (outside China, default)
-        False -> dashscope.aliyuncs.com        (inside China)
+        Full architectural report produced by the main agent.
+    api_key : str, optional
+        API key. Falls back to DASHSCOPE_API_KEY from .env.
+    model : str, optional
+        Model name. Falls back to FLOOR_PLAN_MODEL env var or 'wan2.7-image-pro'.
+    use_intl : bool
+        True  -> dashscope-intl endpoint (outside China, default)
+        False -> dashscope China endpoint
 
     Returns
     -------
     bytes or None
     """
     if not report_text:
-        logger.warning("floor_plan_service: missing report_text.")
+        logger.warning("floor_plan_service: no report_text provided.")
         return None
 
-    # Resolve the API key: prefer the passed argument, then fall back to env
-    resolved_key = dashscope_api_key or os.getenv("DASHSCOPE_API_KEY", "")
+    resolved_key = api_key or os.getenv("DASHSCOPE_API_KEY", "")
     if not resolved_key:
         raise RuntimeError(
-            "DashScope API key not found. Set DASHSCOPE_API_KEY in .env or provide it in the sidebar."
+            "No API key found. Set DASHSCOPE_API_KEY in .env or pass api_key= to the function."
         )
-    logger.info("floor_plan_service: using key source=%s",
-                "parameter" if dashscope_api_key else "DASHSCOPE_API_KEY env")
 
-    # Set endpoint and key BEFORE the call
-    dashscope.base_http_api_url = _ENDPOINT_INTL if use_intl_endpoint else _ENDPOINT_CHINA
-    logger.info("floor_plan_service: endpoint=%s", dashscope.base_http_api_url)
+    resolved_model = model or _DEFAULT_MODEL
+    base_url       = _BASE_URL_INTL if use_intl else _BASE_URL_CHINA
 
-    message = Message(
-        role="user",
-        content=[{"text": _build_prompt(report_text)}],
+    logger.info(
+        "floor_plan_service: model=%s  endpoint=%s  key_src=%s",
+        resolved_model, base_url,
+        "parameter" if api_key else "env"
     )
 
-    response = ImageGeneration.call(
-        model=_WAN_MODEL,
-        api_key=resolved_key,
-        messages=[message],
+    client = OpenAI(api_key=resolved_key, base_url=base_url)
+
+    response = client.chat.completions.create(
+        model=resolved_model,
+        messages=[
+            {
+                "role": "user",
+                "content": [{"type": "text", "text": _build_prompt(report_text)}],
+            }
+        ],
         n=1,
-        size="1024*1024",
     )
 
-    if response.status_code != HTTPStatus.OK:
-        raise RuntimeError(
-            f"DashScope submission failed [{response.status_code}]: "
-            f"{response.get('code', 'N/A')} -- {response.get('message', str(response))}"
-        )
-
-    # Parse response — actual structure confirmed by live test:
-    # output.choices[0].message.content[0].image  →  the image URL
-    try:
-        output   = response.output
-        choices  = output.get("choices", [])
-        content  = choices[0].get("message", {}).get("content", []) if choices else []
-        # Primary path: content item with type="image" has key "image"
-        image_url = None
-        for item in content:
-            if item.get("type") == "image" and item.get("image"):
-                image_url = item["image"]
-                break
-        # Fallback: other possible key names
-        if not image_url and content:
-            first = content[0]
-            image_url = (
-                first.get("image")
-                or first.get("image_url")
-                or first.get("url")
-            )
-    except Exception as parse_err:
-        raise RuntimeError(
-            f"Could not parse DashScope response: {parse_err}\nFull response: {response}"
-        )
-
+    image_url = _extract_image_url(response)
     if not image_url:
         raise RuntimeError(
-            f"No image URL found in DashScope response. Full response: {response}"
+            f"No image URL found in response. Full response:\n{response}"
         )
 
     logger.info("floor_plan_service: downloading image from %s", image_url)

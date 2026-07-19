@@ -311,8 +311,8 @@ if user_query := st.chat_input("اكتب تفاصيل عائلتك أو الصق
                     try:
                         floor_plan_bytes = generate_floor_plan(
                             report_text=full_response,
-                            dashscope_api_key=dashscope_api_key,
-                            use_intl_endpoint=use_intl_endpoint,
+                            api_key=dashscope_api_key,
+                            use_intl=use_intl_endpoint,
                         )
                         if floor_plan_bytes:
                             st.image(
