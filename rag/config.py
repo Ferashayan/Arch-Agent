@@ -28,7 +28,7 @@ class RAGConfig:
     def from_env(cls) -> "RAGConfig":
         return cls(
             gemini_api_key=os.getenv("GEMINI_API_KEY", "").strip("'\""),
-            gemini_model=os.getenv("GEMINI_MODEL", "gemini-2.5-flash").strip("'\""),
+            gemini_model=os.getenv("GEMINI_MODEL", "gemini-3.5-flash").strip("'\""),
             embedding_model=os.getenv("GEMINI_EMBEDDING_MODEL", "text-embedding-004").strip("'\""),
             embedding_dimension=int(os.getenv("EMBEDDING_DIMENSION", "1024")),
             pinecone_api_key=os.getenv("PINECONE_API_KEY", "").strip("'\""),

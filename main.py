@@ -10,6 +10,8 @@ from google import genai
 from rag.config import RAGConfig
 from rag.retriever import retrieve_context
 from services.floor_plan_service import generate_floor_plan
+from services.exterior_design_service import generate_exterior_design
+from services.ifc_builder_service import generate_ifc_model
 
 # تحميل ملف الإعدادات البيئية
 load_dotenv(Path(__file__).resolve().parent / ".env")
@@ -43,36 +45,24 @@ with st.sidebar:
         help="احصل على المفتاح من Google AI Studio: https://aistudio.google.com/apikey",
     )
 
-    st.divider()
-    st.header("إعدادات Wan2.7 (DashScope)")
-    default_dashscope_key = os.getenv("DASHSCOPE_API_KEY", "")
-    try:
-        default_dashscope_key = default_dashscope_key or st.secrets["DASHSCOPE_API_KEY"]
-    except (FileNotFoundError, KeyError):
-        pass
-    dashscope_api_key = st.text_input(
-        "DashScope API Key",
-        value=default_dashscope_key,
-        type="password",
-        help="مفتاح Alibaba DashScope. احصل عليه من: https://dashscope.console.aliyun.com/",
-    )
-    dashscope_region = st.radio(
-        "المنطقة / Region",
-        options=["🌍 خارج الصين (International)", "🇨🇳 داخل الصين (China)"],
-        index=0,
-        horizontal=True,
-        help="اختر International إذا كنت خارج الصين (السعودية، الإمارات...). هذا يحدد عنوان DashScope API.",
-    )
-    use_intl_endpoint = "صين" not in dashscope_region
     generate_floor_plan_enabled = st.toggle(
-        "توليد مخطط الطابق 2D",
-        value=bool(default_dashscope_key),
-        disabled=not bool(dashscope_api_key),
-        help="يتطلب مفتاح DashScope. يرسل تقرير المهندس إلى Wan2.7-image-pro لرسم المخطط.",
+        "توليد مخطط الطابق 2D (Gemini 3.1 Flash Image)",
+        value=bool(default_api_key),
+        disabled=not bool(api_key),
+        help="يتطلب مفتاح Gemini API. يرسل تقرير المهندس إلى Gemini 3.1 Flash Image لرسم المخطط.",
     )
-    if dashscope_api_key:
-        endpoint_label = "dashscope-intl.aliyuncs.com" if use_intl_endpoint else "dashscope.aliyuncs.com"
-        st.caption(f"🔗 Endpoint: `{endpoint_label}`")
+    generate_exterior_design_enabled = st.toggle(
+        "توليد التصميم الخارجي 3D (Gemini 3.1 Flash Image)",
+        value=bool(default_api_key),
+        disabled=not bool(api_key),
+        help="دمج تقرير المهندس ومخطط الطابق الـ 2D لتوليد تصميم خارجي 3D واقعي بالفلاش.",
+    )
+    generate_ifc_enabled = st.toggle(
+        "توليد نموذج 3D BIM / IFC (IfcOpenShell)",
+        value=bool(default_api_key),
+        disabled=not bool(api_key),
+        help="استخراج إحداثيات العناصر المعمارية عبر Gemini وبناء ملف IFC ثلاثي الأبعاد جاهز لبرامج الـ BIM.",
+    )
 
     st.divider()
     st.header("RAG / Pinecone")
@@ -227,14 +217,15 @@ if user_query := st.chat_input("اكتب تفاصيل عائلتك أو الصق
     # 6. هندسة البرومبت وصياغة الـ System Instructions
     # =========================================================
     system_prompt = f"""
-أنت محرك تحليل هندسي ممتثل لكود البناء السعودي (SBC 1101) ومنصة بلدي. 
+أنت محرك تحليل هندسي ممتثل لكود البناء السعودي (SBC 1101) ومنصة بلدي والمنظومة التنظيمية للأكواد العمرانية للمدن السعودية.
 مهمتك: مطابقة معطيات أرض العميل وتفضيلاته (JSON) مع نصوص الاشتراطات المسترجعة من قاعدة البيانات (Pinecone)، وإخراج تقرير فني موجز ومباشر.
 
 ⚠️ قوانين صارمة للأداء (Strict Constraints):
 1. الرد يجب أن يكون مختصراً، مكثفاً بالبيانات، وخالياً تماماً من أي مقدمات ترحيبية، أو تذييل، أو عبارات إنشائية (مثل: "بصفتي مهندس"، "يسعدني تقديم").
 2. ابدأ بكتابة التقرير فوراً مستخدماً النقاط (Bullet Points) والجداول لسهولة القراءة البرمجية.
-3. إذا وجدت تعارضاً نظامياً (مثل بناء سكني على أرض تجارية)، ا ذكره في السطر الأول كـ "تحذير حرج".
+3. إذا وجدت تعارضاً نظامياً (مثل بناء سكني على أرض تجارية)، اذكره في السطر الأول كـ "تحذير حرج".
 4. اعتمد في حساباتك على الأرقام المسترجعة من Pinecone واعتبرها المرجعية العليا.
+5. استخرج اسم (المدينة / المنطقة) بدقة من بيانات العميل، وقم بمطابقة متطلبات الواجهات والشكل الخارجي مع "الكود العمراني والدليل الإرشادي الخاص بتلك المدينة" (مثل الكود العمراني للمنطقة الشرقية، الميثاق العمراني السلماني بالرياض، إلخ) المتوفر في السياق.
 
 الاشتراطات النظامية المسترجعة (Pinecone RAG Context):
 --------------------------------------------------
@@ -246,7 +237,7 @@ if user_query := st.chat_input("اكتب تفاصيل عائلتك أو الصق
 {client_requirements_block}
 --------------------------------------------------
 
-أخرج التقرير الهندسي النهائي مستخدمماً هذا الهيكل الصارم فقط وبدون أي مقدمات:
+أخرج التقرير الهندسي النهائي مستخدماً هذا الهيكل الصارم فقط وبدون أي مقدمات:
 
 ### 1. ملخص الامتثال والجدوى النظامية
 - حالة الاستخدام والتصنيف: [ممتثل / يوجد تعارض مع ذكر السبب في سطر واحد]
@@ -265,7 +256,12 @@ if user_query := st.chat_input("اكتب تفاصيل عائلتك أو الصق
   * الدور الأرضي: [الفناء الداخلي المفتوح "الحوش"، مجلس رجال بمدخل مستقل، صالة عائلية واسعة مطلة على الفناء، مطبخ مغلق مع مستودع ومطبخ تحضيري، جناح كبار السن بمواصفات خاصة، غرفة عاملة منزلية بدورة مياه]
   * الدور الأول: [جناح نوم رئيسي "ماستر" بغرفة ملابس، عدد (X) غرف نوم فرعية بدورات مياه، صالة عائلية علوية]
   * الملحق: [صالة متعددة الاستخدامات، منطقة غسيل وتخزين، سطح مفتوح بجلسة]
-    """
+
+### 4. الطراز المعماري والهوية البصرية للشكل الخارجي (Urban & Facade Code)
+- المدينة والمنطقة المستهدفة: [حدد اسم المدينة والمنطقة المستخرجة من الـ JSON]
+- الطراز المعماري الإلزامي للمدينة: [تحديد الطراز بناءً على اشتراطات كود المدينة، مثل: المودرن المتوافق مع الهوية العمرانية للمنطقة الشرقية والدمام، أو الطراز السلماني للرياض، إلخ]
+- محددات الواجهات والمواد الخارجية: [اذكر القيود الرقمية والنصية للألوان المسموحة، نسب فتحات النوافذ والزجاج، ومواد التشطيب الخارجية المفروضة حسب بلدية المدينة مثل الحجر، البروفايل، والتكسيات]
+"""
 
     # =========================================================
     # 7. استدعاء نموذج جيميناي وبث الإجابة (Gemini Streaming)
@@ -303,21 +299,21 @@ if user_query := st.chat_input("اكتب تفاصيل عائلتك أو الصق
                 message_placeholder.markdown(full_response)
 
         # =========================================================
-        # 8. توليد مخطط الطابق الثنائي الأبعاد (Wan2.7-image)
+        # 8. توليد مخطط الطابق الثنائي الأبعاد والتصميم الخارجي 3D (Gemini 3.1 Flash Image)
         # =========================================================
-        if full_response and dashscope_api_key and generate_floor_plan_enabled:
+        floor_plan_bytes = None
+        if full_response and api_key and generate_floor_plan_enabled:
             with st.expander("🏠 عرض مخطط الطابق الثنائي الأبعاد (2D Floor Plan)", expanded=False):
-                with st.spinner("جاري إرسال التقرير إلى Wan2.7-image لتوليد المخطط المعماري..."):
+                with st.spinner("جاري إرسال التقرير إلى Gemini 3.1 Flash Image لتوليد المخطط المعماري..."):
                     try:
                         floor_plan_bytes = generate_floor_plan(
                             report_text=full_response,
-                            api_key=dashscope_api_key,
-                            use_intl=use_intl_endpoint,
+                            api_key=api_key,
                         )
                         if floor_plan_bytes:
                             st.image(
                                 floor_plan_bytes,
-                                caption="مخطط ثنائي الأبعاد مُولَّد بواسطة Wan2.7-image (DashScope)",
+                                caption="مخطط ثنائي الأبعاد مُولَّد بواسطة Gemini 3.1 Flash Image",
                                 use_container_width=True,
                             )
                             st.download_button(
@@ -327,8 +323,71 @@ if user_query := st.chat_input("اكتب تفاصيل عائلتك أو الصق
                                 mime="image/png",
                             )
                         else:
-                            st.warning("⚠️ لم يتم توليد صورة من Wan2.7-image. تحقق من صلاحيات مفتاح DashScope.")
+                            st.warning("⚠️ لم يتم توليد صورة من Gemini 3.1 Flash Image. تحقق من صلاحيات مفتاح Gemini.")
                     except Exception as fp_exc:
-                        st.error(f"❌ خطأ في خدمة توليد المخطط (Wan2.7): `{fp_exc}`")
+                        st.error(f"❌ خطأ في خدمة توليد المخطط (Gemini 3.1 Flash Image): `{fp_exc}`")
+
+        # =========================================================
+        # 9. توليد التصميم الخارجي ثلاثي الأبعاد (3D Exterior Design)
+        # =========================================================
+        if full_response and api_key and generate_exterior_design_enabled:
+            with st.expander("🏛️ عرض التصميم الخارجي ثلاثي الأبعاد (3D Exterior Design)", expanded=False):
+                with st.spinner("جاري دمج تقرير المهندس ومخطط 2D لتوليد المنظور الخارجي 3D..."):
+                    try:
+                        exterior_bytes = generate_exterior_design(
+                            report_text=full_response,
+                            floor_plan_bytes=floor_plan_bytes,
+                            style=current_style,
+                            api_key=api_key,
+                        )
+                        if exterior_bytes:
+                            st.image(
+                                exterior_bytes,
+                                caption=f"تصميم خارجي 3D مُولَّد بواسطة Gemini 3.1 Flash Image ({current_style})",
+                                use_container_width=True,
+                            )
+                            st.download_button(
+                                label="⬇️ تحميل التصميم الخارجي (PNG)",
+                                data=exterior_bytes,
+                                file_name="exterior_design.png",
+                                mime="image/png",
+                            )
+                        else:
+                            st.warning("⚠️ لم يتم توليد تصميم خارجي من Gemini 3.1 Flash Image.")
+                    except Exception as ext_exc:
+                        st.error(f"❌ خطأ في خدمة التصميم الخارجي: `{ext_exc}`")
+
+        # =========================================================
+        # 10. توليد نموذج البناء المعماري ثلاثي الأبعاد (3D BIM / IFC Model)
+        # =========================================================
+        if full_response and api_key and generate_ifc_enabled:
+            with st.expander("📦 عرض نموذج البناء المعماري ثلاثي الأبعاد (3D BIM / IFC Model)", expanded=False):
+                with st.spinner("جاري استخراج إحداثيات البناء وبناء نموذج الـ IFC بواسطة IfcOpenShell..."):
+                    try:
+                        ifc_bytes, coords_data = generate_ifc_model(
+                            report_text=full_response,
+                            floor_plan_bytes=floor_plan_bytes,
+                            api_key=api_key,
+                        )
+                        if ifc_bytes and coords_data:
+                            st.success("✅ تم بناء نموذج الـ IFC بنجاح ممتثلاً لمواصفات البناء!")
+                            col1, col2, col3, col4 = st.columns(4)
+                            col1.metric("عدد الأدوار", len(coords_data.get("stories", [])))
+                            col2.metric("عدد الجدران", len(coords_data.get("walls", [])))
+                            col3.metric("عدد الغرف", len(coords_data.get("rooms", [])))
+                            col4.metric("عدد الفتحات", len(coords_data.get("openings", [])))
+
+                            st.download_button(
+                                label="⬇️ تحميل نموذج البناء (IFC File)",
+                                data=ifc_bytes,
+                                file_name="architectural_villa_model.ifc",
+                                mime="application/x-step",
+                            )
+                            with st.expander("🔍 استعراض إحداثيات وعناصر الـ JSON المستخرجة"):
+                                st.json(coords_data)
+                        else:
+                            st.warning("⚠️ تعذر بناء نموذج الـ IFC.")
+                    except Exception as ifc_exc:
+                        st.error(f"❌ خطأ في خدمة بناء نموذج الـ IFC: `{ifc_exc}`")
 
     st.session_state.messages.append({"role": "assistant", "content": full_response})

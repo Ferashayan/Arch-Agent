@@ -5,3 +5,4 @@ pinecone
 pypdf
 openai
 dashscope
+ifcopenshell
