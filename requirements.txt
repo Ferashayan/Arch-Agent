@@ -3,6 +3,9 @@ google-genai
 python-dotenv
 pinecone
 pypdf
-openai
-dashscope
 ifcopenshell
+numpy
+pydantic
+fastapi
+uvicorn[standard]
+python-multipart
